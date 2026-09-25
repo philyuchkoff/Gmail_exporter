@@ -2,8 +2,27 @@ from __future__ import annotations
 
 import os
 import base64
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 import pandas as pd
+
+def _parse_date_folder(date_header: str) -> str:
+    """Parse an RFC 2822 Date header into a YYYY-MM-DD folder name.
+
+    Falls back to today's UTC date if the header is missing or unparseable
+    so that attachments are still saved somewhere instead of crashing.
+    """
+    try:
+        dt = parsedate_to_datetime(date_header)
+    except (TypeError, ValueError):
+        dt = None
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime('%Y-%m-%d')
+
 
 def get_email_detail(service, msg_id, save_folder):
     msg = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
@@ -31,7 +50,7 @@ def get_email_detail(service, msg_id, save_folder):
             data = service.users().messages().attachments().get(
                 userId='me', messageId=msg_id, id=attachment_id).execute()
             file_data = base64.urlsafe_b64decode(data['data'].encode('UTF-8'))
-            date_folder = date.split()[0].replace(",", "").replace(":", "-")
+            date_folder = _parse_date_folder(date)
             folder_path = os.path.join(save_folder, date_folder)
             os.makedirs(folder_path, exist_ok=True)
             filename = part['filename'].replace('/', '_').replace('\\', '_')
