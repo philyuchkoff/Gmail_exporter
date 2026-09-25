@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import base64
 from bs4 import BeautifulSoup
@@ -56,9 +58,25 @@ def get_email_detail(service, msg_id, save_folder):
 
 
 
-def fetch_emails(service, query=''):
-    result = service.users().messages().list(userId='me', q=query).execute()
-    messages = result.get('messages', [])
+def fetch_emails(service, query='', page_size=100, max_results=None):
+    messages: list[dict] = []
+    page_token: str | None = None
+
+    while True:
+        params: dict = {'userId': 'me', 'q': query, 'maxResults': page_size}
+        if page_token:
+            params['pageToken'] = page_token
+
+        result = service.users().messages().list(**params).execute()
+        messages.extend(result.get('messages', []))
+
+        if max_results is not None and len(messages) >= max_results:
+            return messages[:max_results]
+
+        page_token = result.get('nextPageToken')
+        if not page_token:
+            break
+
     return messages
 
 # Add this to the bottom of gmail_fetcher.py
