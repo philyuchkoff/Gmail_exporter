@@ -1,0 +1,35 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Credentials and tokens — never commit
+credentials.json
+token.json
+token.pickle
+*.pickle
+
+# Local config / secrets
+.env
+.env.*
+
+# Output directories
+attachments/
+exported_data/
+exported_emails/
+exports/
+
+# Excel exports may contain personal data
+*.xlsx
+!docs/**/*.xlsx
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
