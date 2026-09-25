@@ -24,46 +24,96 @@ def _parse_date_folder(date_header: str) -> str:
     return dt.strftime('%Y-%m-%d')
 
 
+def _decode_part_data(data: str) -> str:
+    """Decode a Gmail API part body data field (base64url encoded)."""
+    return base64.urlsafe_b64decode(data.encode('UTF-8')).decode('utf-8', errors='replace')
+
+
+def _walk_parts(service, msg_id, parts, attachments, body_state):
+    """Recursively walk a Gmail message payload, collecting attachments and body.
+
+    body_state is a dict with keys 'plain' and 'html'; plain wins over html
+    when both are present.
+    """
+    for part in parts:
+        filename = part.get('filename') or ''
+        mime_type = part.get('mimeType', '')
+        body = part.get('body') or {}
+
+        if filename:
+            attachment_id = body.get('attachmentId')
+            if attachment_id:
+                data = service.users().messages().attachments().get(
+                    userId='me', messageId=msg_id, id=attachment_id
+                ).execute()
+                file_data = base64.urlsafe_b64decode(
+                    data.get('data', '').encode('UTF-8')
+                )
+                yield part, filename, file_data
+            continue
+
+        if mime_type.startswith('multipart/'):
+            nested = part.get('parts') or []
+            yield from _walk_parts(service, msg_id, nested, attachments, body_state)
+            continue
+
+        part_data = body.get('data')
+        if not part_data:
+            continue
+
+        if mime_type == 'text/plain' and not body_state['plain']:
+            body_state['plain'] = _decode_part_data(part_data)
+        elif mime_type == 'text/html' and not body_state['html']:
+            body_state['html'] = BeautifulSoup(
+                _decode_part_data(part_data), 'html.parser'
+            ).get_text()
+
+
 def get_email_detail(service, msg_id, save_folder):
     msg = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
     payload = msg['payload']
-    headers = payload['headers']
+    headers = payload.get('headers', [])
 
     subject = sender = recipient = date = ''
     for h in headers:
-        if h['name'] == 'Subject':
-            subject = h['value']
-        elif h['name'] == 'From':
-            sender = h['value']
-        elif h['name'] == 'To':
-            recipient = h['value']
-        elif h['name'] == 'Date':
-            date = h['value']
+        name = h.get('name', '')
+        value = h.get('value', '')
+        if name == 'Subject':
+            subject = value
+        elif name == 'From':
+            sender = value
+        elif name == 'To':
+            recipient = value
+        elif name == 'Date':
+            date = value
 
-    parts = payload.get('parts', [])
-    body = ''
-    attachments = []
+    body_state: dict = {'plain': '', 'html': ''}
+    attachments: list[str] = []
+    nested = payload.get('parts') or []
 
-    for part in parts:
-        if part['filename']:
-            attachment_id = part['body']['attachmentId']
-            data = service.users().messages().attachments().get(
-                userId='me', messageId=msg_id, id=attachment_id).execute()
-            file_data = base64.urlsafe_b64decode(data['data'].encode('UTF-8'))
-            date_folder = _parse_date_folder(date)
-            folder_path = os.path.join(save_folder, date_folder)
-            os.makedirs(folder_path, exist_ok=True)
-            filename = part['filename'].replace('/', '_').replace('\\', '_')
+    for part, filename, file_data in _walk_parts(
+        service, msg_id, nested, attachments, body_state
+    ):
+        date_folder = _parse_date_folder(date)
+        folder_path = os.path.join(save_folder, date_folder)
+        os.makedirs(folder_path, exist_ok=True)
+        safe_name = filename.replace('/', '_').replace('\\', '_')
+        filepath = os.path.join(folder_path, safe_name)
+        with open(filepath, 'wb') as f:
+            f.write(file_data)
+        attachments.append(filename)
 
-            filepath = os.path.join(folder_path, filename)
-            with open(filepath, 'wb') as f:
-                f.write(file_data)
-            attachments.append(part['filename'])
-        else:
-            if part['mimeType'] == 'text/html':
-                body = BeautifulSoup(base64.urlsafe_b64decode(part['body']['data']).decode(), 'html.parser').get_text()
-            elif part['mimeType'] == 'text/plain':
-                body = base64.urlsafe_b64decode(part['body']['data']).decode()
+    if not body_state['plain'] and not body_state['html'] and not nested:
+        top_data = (payload.get('body') or {}).get('data')
+        if top_data:
+            mime_type = payload.get('mimeType', '')
+            text = _decode_part_data(top_data)
+            if mime_type == 'text/html':
+                body_state['html'] = BeautifulSoup(text, 'html.parser').get_text()
+            else:
+                body_state['plain'] = text
+
+    body = body_state['plain'] or body_state['html']
 
     return {
         'Date': date,
@@ -73,8 +123,6 @@ def get_email_detail(service, msg_id, save_folder):
         'Body': body,
         'Attachments': ', '.join(attachments)
     }
-
-
 
 
 def fetch_emails(service, query='', page_size=100, max_results=None):
@@ -98,9 +146,6 @@ def fetch_emails(service, query='', page_size=100, max_results=None):
 
     return messages
 
-# Add this to the bottom of gmail_fetcher.py
-
-import pandas as pd
 
 def export_to_excel(email_data_list, output_file):
     df = pd.DataFrame(email_data_list)
